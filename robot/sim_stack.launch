@@ -1,19 +1,21 @@
 <launch>
-  <!-- Headless Gazebo for remote VM -->
-  <arg name="headless" default="true" />
-
+  <!-- Set TurtleBot3 model -->
   <env name="TURTLEBOT3_MODEL" value="waffle"/>
 
-  <!-- Gazebo + TurtleBot3 world -->
-  <include file="$(find turtlebot3_gazebo)/launch/turtlebot3_world.launch">
-    <arg name="headless" value="$(arg headless)"/>
+  <!-- Start with simple empty world -->
+  <include file="$(find turtlebot3_gazebo)/launch/turtlebot3_empty_world.launch">
+    <arg name="gui" value="false"/>
   </include>
 
-  <!-- Rosbridge WebSocket server (for roslibjs in the browser) -->
-  <node pkg="rosbridge_server" type="rosbridge_websocket" name="rosbridge_websocket" args="--port 9090" output="screen"/>
+  <!-- ROSbridge WebSocket server -->
+  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+    <arg name="address" value="0.0.0.0"/>
+    <arg name="port" value="9090"/>
+  </include>
 
-  <!-- Web video server (streams /camera/rgb/image_raw as MJPEG) -->
+  <!-- Web video server for camera streaming -->
   <node pkg="web_video_server" type="web_video_server" name="web_video_server" output="screen">
+    <param name="address" value="0.0.0.0"/>
     <param name="port" value="8080"/>
   </node>
 </launch>

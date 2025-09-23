@@ -1,41 +1,56 @@
-version: "3.8"
+version: "3.9"
 
 services:
   db:
     image: mysql:8.0
-    env_file:
-      - .env
-    command: --default-authentication-plugin=mysql_native_password
+    container_name: tbt3_db
+    environment:
+      MYSQL_DATABASE: ros_logs
+      MYSQL_USER: rosapp
+      MYSQL_PASSWORD: Dpt-311011
+      MYSQL_ROOT_PASSWORD: Dpt-311011
+      TZ: Asia/Jakarta
     volumes:
+      - db_data:/var/lib/mysql
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-urosapp", "-pDpt-311011"]
       interval: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 3s
+      retries: 10
 
   web:
     build: ./web
-    env_file:
-      - .env
+    container_name: tbt3_web
+    environment:
+      DB_HOST: db
+      DB_USER: rosapp
+      DB_PASS: Dpt-311011
+      DB_NAME: ros_logs
+      TZ: Asia/Jakarta
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000" # web app
-      - "9090:9090" # rosbridge (opsional, kalau web langsung connect)
-      - "8080:8080" # video stream (opsional)
-    restart: unless-stopped
-  # Opsional: jalankan robot di VM
-  # Untuk challenge, biasanya robot (Gazebo + ROS sim) dijalankan di laptop sendiri
-  # Kalau mau deploy di Azure juga, uncomment bagian ini:
-  # robot:
-  #   build: ./robot
-  #   environment:
-  #     - TURTLEBOT3_MODEL=waffle
-  #   ports:
-  #     - "9090:9090"  # rosbridge websocket
-  #     - "8080:8080"  # web_video_server (camera MJPEG)
-  #     - "5000:5000"  # REST control
-  #   restart: unless-stopped
+      - "80:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  robot:
+    build: ./robot
+    container_name: tbt3_robot
+    environment:
+      TURTLEBOT3_MODEL: waffle
+      SIM_MODE: fake            # penting: matikan Gazebo
+      ROSBRIDGE_PORT: 9090
+      VIDEO_PORT: 8080
+      TZ: Asia/Jakarta
+    shm_size: "2g"
+    privileged: true
+    ports:
+      - "9090:9090"   # rosbridge websocket
+      - "8080:8080"   # web_video_server
+    volumes:
+      - ./assets:/assets:ro
+
+volumes:
+  db_data:

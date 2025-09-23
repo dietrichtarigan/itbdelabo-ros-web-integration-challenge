@@ -1,0 +1,11 @@
+<launch>
+  <!-- Spawn empty world -->
+  <include file="$(find turtlebot3_gazebo)/launch/empty_world.launch">
+    <arg name="gui" value="false"/>
+  </include>
+
+  <!-- Force load Waffle URDF (with camera) -->
+  <param name="robot_description" command="$(find xacro)/xacro '$(find turtlebot3_description)/urdf/turtlebot3_waffle.urdf.xacro'"/>
+  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model"
+        args="-urdf -param robot_description -model turtlebot3_waffle" />
+</launch>

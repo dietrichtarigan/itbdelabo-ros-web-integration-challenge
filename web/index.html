@@ -5,8 +5,10 @@
   <meta charset="utf-8" />
   <title>ROS Web Control — TurtleBot3 Waffle</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- roslibjs (official robot web tools) -->
-  <script src="https://static.robotwebtools.org/roslibjs/current/roslib.min.js"></script>
+  <!-- roslibjs -->
+  <script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+  <!-- nipplejs (joystick) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -61,11 +63,17 @@
       color: var(--txt);
       cursor: pointer;
       font-weight: 600;
+      transition: 0.1s;
     }
 
     button:hover {
       border-color: #4b5563;
       transform: translateY(-1px);
+    }
+
+    button.active {
+      background: var(--accent);
+      color: #000;
     }
 
     .grid {
@@ -124,6 +132,12 @@
     .err {
       color: #f43f5e;
     }
+
+    #joystick {
+      width: 200px;
+      height: 200px;
+      margin: 20px auto;
+    }
   </style>
 </head>
 
@@ -145,12 +159,15 @@
 
       <div style="margin-top:14px">
         <img id="cam" class="stream" alt="Camera stream" />
-        <div class="muted" style="margin-top:6px">Topic: /camera/rgb/image_raw</div>
+        <div class="row" style="margin-top:6px; justify-content:space-between">
+          <div class="muted">Topic: /camera/rgb/image_raw</div>
+          <button id="snapshotBtn">📸 Snapshot</button>
+        </div>
       </div>
 
       <div style="margin-top:18px">
         <div class="row" style="justify-content:center; margin-bottom:8px">
-          <span class="muted">Teleop (WASD/Arrows to drive, Shift for faster)</span>
+          <span class="muted">Teleop (WASD/Arrows or joystick)</span>
         </div>
         <div class="grid">
           <div></div> <button class="big" data-cmd="FWD">▲</button>
@@ -161,6 +178,12 @@
           <div></div> <button class="big" data-cmd="BACK">▼</button>
           <div></div>
         </div>
+        <div id="joystick"></div>
+      </div>
+
+      <div style="margin-top:18px" class="row" id="telemetry">
+        <span>Battery: <span id="battery">--%</span></span>
+        <span>Odom: <span id="odom">(0,0)</span></span>
       </div>
     </section>
 
@@ -184,64 +207,111 @@
   </div>
 
   <script>
-    // --- Config derivation (host ports exposed by docker-compose) ---
+    // --- Config ---
     const HOST = location.hostname;
     const ROSBRIDGE_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + HOST + ':9090';
-    const MJPEG_URL = location.protocol + '//' + HOST + ':8080/stream?topic=/camera/rgb/image_raw';
-    const API = location.protocol + '//' + HOST + ':8000/api';
+    const MJPEG_URL = location.protocol + '//' + HOST + ':8080/stream?topic=/camera/image_raw';
+    const API = location.origin + '/api'; // pastikan ini! (bukan :8000)
 
-    // Update camera stream URL
     document.getElementById('cam').src = MJPEG_URL;
 
-    // --- ROS connection via roslibjs ---
-    let ros;
-    let cmdVel;
+    let ros, cmdVel;
+
+    async function log(event, detail = '', level = 'INFO') {
+      try {
+        await fetch(`${API}/log`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ event, detail, level })
+        });
+      } catch (e) { /* silent */ }
+    }
 
     function connectROS() {
+      if (typeof ROSLIB === 'undefined') {
+        console.error('ROSLIB not loaded! Retrying in 2 seconds...');
+        setTimeout(connectROS, 2000);
+        return;
+      }
+      
       ros = new ROSLIB.Ros({ url: ROSBRIDGE_URL });
 
       ros.on('connection', () => {
-        setStatus('connected');
+        setStatus('running');
         cmdVel = new ROSLIB.Topic({
           ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist'
         });
+        
+        console.log('ROS connected, cmdVel topic initialized');
+
+        // === Subscribe /cmd_vel untuk nge-log setiap ada perintah
+        const cmdVelEcho = new ROSLIB.Topic({
+          ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist'
+        });
+        cmdVelEcho.subscribe(msg => {
+          const d = `lx=${msg.linear.x.toFixed(3)}, az=${msg.angular.z.toFixed(3)}`;
+          log('cmd_vel', d);
+        });
+
+        // Subscribe telemetry - hanya odom yang tersedia
+        const odom = new ROSLIB.Topic({
+          ros, name: '/odom', messageType: 'nav_msgs/Odometry'
+        });
+        odom.subscribe(msg => {
+          const { x, y } = msg.pose.pose.position;
+          document.getElementById('odom').textContent = `(${x.toFixed(2)}, ${y.toFixed(2)})`;
+          console.log(`Odom updated: x=${x.toFixed(2)}, y=${y.toFixed(2)}`);
+        });
+        
+        // Set battery static karena tidak ada publisher
+        document.getElementById('battery').textContent = '100%';
+
+        log('websocket', 'connected to rosbridge');
       });
 
-      ros.on('error', (err) => {
-        console.error(err);
+      ros.on('error', () => {
         setStatus('error');
+        log('websocket', 'connection error', 'ERROR');
       });
-
       ros.on('close', () => {
         setStatus('disconnected');
-        // Try reconnect every 2s
+        log('websocket', 'connection closed', 'WARN');
         setTimeout(connectROS, 2000);
       });
     }
 
     function setStatus(s) {
       const el = document.getElementById('sim-status');
-      const cls = { connected: 'ok', disconnected: 'warn', error: 'err', checking: 'muted', running: 'ok', stopped: 'warn' };
+      const cls = { connected:'ok', running:'ok', disconnected:'warn', error:'err', checking:'muted', stopped:'warn' };
       el.className = 'badge ' + (cls[s] || 'muted');
       el.textContent = s;
     }
 
-    // --- Movement helpers ---
     function sendTwist(lx = 0, az = 0) {
-      if (!cmdVel) return;
-      const msg = new ROSLIB.Message({
-        linear: { x: lx, y: 0.0, z: 0.0 },
-        angular: { x: 0.0, y: 0.0, z: az }
-      });
-      cmdVel.publish(msg);
+      if (!ros || !cmdVel) {
+        console.error('ROS or cmdVel not initialized! Reconnecting...');
+        connectROS();
+        return;
+      }
+      
+      // Log bahwa function dipanggil
+      console.log(`sendTwist called: lx=${lx}, az=${az}`);
+      
+      try {
+        const msg = new ROSLIB.Message({
+          linear: { x: lx, y: 0, z: 0 },
+          angular: { x: 0, y: 0, z: az }
+        });
+        cmdVel.publish(msg);
+        console.log('Message published successfully');
+      } catch (e) {
+        console.error('Error publishing message:', e);
+        // Reconnect jika ada error
+        connectROS();
+      }
     }
 
-    const SPEED = 0.3, TURN = 0.9;
-    const FAST = 2.0;
-
-    async function log(event, detail = '', level = 'INFO') {
-      try { await fetch(`${API}/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event, detail, level }) }); } catch { }
-    }
+    const SPEED = 0.3, TURN = 0.9, FAST = 2.0;
 
     function bindTeleop() {
       const map = {
@@ -251,30 +321,117 @@
         RIGHT: () => sendTwist(0, -TURN),
         STOP: () => sendTwist(0, 0),
       };
-
       document.querySelectorAll('button[data-cmd]').forEach(btn => {
-        btn.addEventListener('mousedown', () => { map[btn.dataset.cmd](); log('teleop', btn.dataset.cmd); });
-        btn.addEventListener('mouseup', () => { map.STOP(); });
-        btn.addEventListener('mouseleave', () => { map.STOP(); });
+        btn.addEventListener('mousedown', () => { 
+          console.log('Button pressed:', btn.dataset.cmd);
+          map[btn.dataset.cmd](); 
+          log('teleop', btn.dataset.cmd.toLowerCase()); 
+        });
+        btn.addEventListener('mouseup', () => {
+          console.log('Button released, stopping robot');
+          sendTwist(0, 0);
+        });
+        btn.addEventListener('mouseleave', () => {
+          console.log('Mouse left button, stopping robot');
+          sendTwist(0, 0);
+        });
+        btn.addEventListener('touchstart', (e) => { 
+          e.preventDefault(); 
+          console.log('Touch started:', btn.dataset.cmd);
+          map[btn.dataset.cmd](); 
+          log('teleop', btn.dataset.cmd.toLowerCase()); 
+        });
+        btn.addEventListener('touchend', (e) => {
+          e.preventDefault();
+          console.log('Touch ended, stopping robot');
+          sendTwist(0, 0);
+        });
       });
 
       window.addEventListener('keydown', e => {
         const fast = e.shiftKey ? FAST : 1.0;
-        if (['ArrowUp', 'w', 'W'].includes(e.key)) { sendTwist(SPEED * fast, 0); log('teleop', 'key:FWD'); }
-        else if (['ArrowDown', 's', 'S'].includes(e.key)) { sendTwist(-SPEED * fast, 0); log('teleop', 'key:BACK'); }
-        else if (['ArrowLeft', 'a', 'A'].includes(e.key)) { sendTwist(0, TURN * fast); log('teleop', 'key:LEFT'); }
-        else if (['ArrowRight', 'd', 'D'].includes(e.key)) { sendTwist(0, -TURN * fast); log('teleop', 'key:RIGHT'); }
+        if (['ArrowUp','w','W'].includes(e.key)) { 
+          sendTwist(SPEED*fast,0); 
+          log('teleop','key:FWD' + (fast > 1 ? ' (fast)' : '')); 
+        }
+        else if (['ArrowDown','s','S'].includes(e.key)) { 
+          sendTwist(-SPEED*fast,0); 
+          log('teleop','key:BACK' + (fast > 1 ? ' (fast)' : '')); 
+        }
+        else if (['ArrowLeft','a','A'].includes(e.key)) { 
+          sendTwist(0,TURN*fast); 
+          log('teleop','key:LEFT' + (fast > 1 ? ' (fast)' : '')); 
+        }
+        else if (['ArrowRight','d','D'].includes(e.key)) { 
+          sendTwist(0,-TURN*fast); 
+          log('teleop','key:RIGHT' + (fast > 1 ? ' (fast)' : '')); 
+        }
       });
-      window.addEventListener('keyup', () => sendTwist(0, 0));
+      window.addEventListener('keyup', e => {
+        // Hanya stop jika key yang di-release adalah key navigasi
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 
+             'w', 'W', 'a', 'A', 's', 'S', 'd', 'D'].includes(e.key)) {
+          sendTwist(0, 0);
+          console.log('Key released, stopping robot');
+        }
+      });
     }
 
-    // --- Start/Stop controls ---
+    // === Snapshot tombol ===
+    document.getElementById('snapshotBtn')?.addEventListener('click', async () => {
+      try {
+        // ambil frame dari <img id="cam">
+        const img = document.getElementById('cam');
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth || img.width; 
+        c.height = img.naturalHeight || img.height;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        const dataURL = c.toDataURL('image/jpeg', 0.9);
+        await fetch(`${API}/snapshot`, {
+          method: 'POST', 
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ dataURL, topic: '/camera/image_raw' })
+        });
+        await log('snapshot', 'image saved to server');
+        alert('Snapshot saved');
+      } catch (e) {
+        console.error('Snapshot failed:', e);
+        log('snapshot', 'failed: ' + e.message, 'ERROR');
+      }
+    });
+
+    function initJoystick() {
+      const manager = nipplejs.create({
+        zone: document.getElementById('joystick'),
+        mode: 'dynamic',
+        color: 'cyan'
+      });
+      manager.on('move', (evt, data) => {
+        const lx = SPEED * (data.vector.y * -1);
+        const az = TURN * data.vector.x;
+        sendTwist(lx, az);
+      });
+      manager.on('end', () => {
+        sendTwist(0, 0);
+        log('teleop', 'joystick_end');
+      });
+      manager.on('start', () => {
+        log('teleop', 'joystick_start');
+      });
+    }
+
     async function toggle(action) {
-      const r = await fetch(`${API}/toggle?action=${action}`, { method: 'POST' });
-      const data = await r.json().catch(() => ({}));
-      await log('toggle_click', action);
-      checkHealth();
-      return data;
+      try {
+        const r = await fetch(`${API}/toggle?action=${action}`, { method: 'POST' });
+        const data = await r.json();
+        await log('robot_control', action + ' requested');
+        checkHealth();
+        return data;
+      } catch (e) {
+        await log('robot_control', action + ' failed: ' + e.message, 'ERROR');
+        return {};
+      }
     }
     document.getElementById('startBtn').onclick = () => toggle('start');
     document.getElementById('stopBtn').onclick = () => toggle('stop');
@@ -283,43 +440,55 @@
       try {
         const r = await fetch(`${API}/robot/health`);
         const { running } = await r.json();
-        setStatus(running ? 'running' : 'stopped');
-      } catch {
-        setStatus('disconnected');
+        const oldStatus = document.getElementById('sim-status').textContent;
+        const newStatus = running ? 'running' : 'stopped';
+        
+        // Jika status robot berubah dari stopped ke running, reinitialize ROS connection
+        if (oldStatus === 'stopped' && newStatus === 'running') {
+          console.log('Robot restarted, reinitializing ROS connection');
+          if (ros) {
+            ros.close();
+          }
+          setTimeout(connectROS, 1000);
+        }
+        
+        setStatus(newStatus);
+      } catch { 
+        setStatus('disconnected'); 
       }
     }
 
-    // --- Logs table ---
     async function loadLogs() {
-      const tbody = document.querySelector('#logs tbody');
+      const tbody = document.querySelector('#logs tbody'); 
       tbody.innerHTML = '';
       try {
         const r = await fetch(`${API}/logs?minutes=60`);
         const rows = await r.json();
         rows.forEach(row => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${new Date(row.ts).toLocaleTimeString()}</td>
-            <td>${row.level}</td>
-            <td>${row.event}</td>
-            <td class="muted">${row.detail || ''}</td>`;
+          tr.innerHTML = `<td>${new Date(row.ts).toLocaleTimeString()}</td>
+                          <td>${row.level}</td>
+                          <td>${row.event}</td>
+                          <td class="muted">${row.detail||''}</td>`;
           tbody.appendChild(tr);
         });
-      } catch { }
+      } catch (e) {
+        console.warn('Failed to load logs:', e);
+      }
     }
     document.getElementById('refreshLogs').onclick = loadLogs;
 
-    // Boot
-    (function init() {
+    (function init(){
       setStatus('checking');
       connectROS();
       bindTeleop();
+      initJoystick();
       checkHealth();
       loadLogs();
-      setInterval(loadLogs, 15_000);
-      setInterval(checkHealth, 5_000);
+      setInterval(loadLogs, 15000);
+      setInterval(checkHealth, 5000);
+      log('app', 'web interface started');
     })();
   </script>
 </body>
-
 </html>

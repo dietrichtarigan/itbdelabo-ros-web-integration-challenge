@@ -1,103 +1,128 @@
 const express = require('express');
-const path = require('path');
-const morgan = require('morgan');
-const cors = require('cors');
-const axios = require('axios');
+const bodyParser = require('body-parser');
 const mysql = require('mysql2/promise');
+const Docker = require('dockerode');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(express.json());
-app.use(cors());
-app.use(morgan('dev'));
+app.use(bodyParser.json());
+app.use(express.static(__dirname));
 
+// --- DB config ---
 const {
   DB_HOST = 'db',
-  DB_NAME = 'rosweb',
-  DB_USER = 'ros',
-  DB_PASSWORD = 'ros',
-  ROBOT_API = 'http://robot:5000'
+  DB_USER = 'rosapp',
+  DB_PASS = 'Dpt-311011',
+  DB_NAME = 'ros_logs',
+  ROBOT_CONTAINER = 'tbt3_robot',
+  PORT = 3000
 } = process.env;
 
-// MySQL pool
 let pool;
 (async () => {
   pool = await mysql.createPool({
     host: DB_HOST,
     user: DB_USER,
-    password: DB_PASSWORD,
+    password: DB_PASS,
     database: DB_NAME,
     waitForConnections: true,
-    connectionLimit: 10
+    connectionLimit: 5
   });
 })();
 
-// Helper: write a log
-async function log(event, detail = '', level = 'INFO') {
+// --- Docker ---
+const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+async function getContainer() {
   try {
-    await pool.query('INSERT INTO logs (event, detail, level) VALUES (?, ?, ?)', [event, detail, level]);
-  } catch (e) {
-    console.error('log insert failed:', e.message);
+    return docker.getContainer(ROBOT_CONTAINER);
+  } catch {
+    return null;
   }
 }
 
-// Serve the SPA
-app.get('/', (_, res) => res.sendFile(path.join(__dirname, 'index.html')));
-
-// Toggle robot simulation (start/stop)
-app.post('/api/toggle', async (req, res) => {
+// ===== Logs API =====
+app.post('/api/log', async (req, res) => {
   try {
-    const { action } = req.query; // ?action=start or stop
-    if (!action || !['start', 'stop'].includes(action)) {
-      return res.status(400).json({ error: "Query param 'action' must be 'start' or 'stop'." });
-    }
-    const url = `${ROBOT_API}/${action}`;
-    const { data } = await axios.post(url).catch(async (err) => {
-      // Retry via GET in case POST blocked by proxy
-      if (err.response) throw err;
-      const r = await axios.get(url);
-      return { data: r.data };
-    });
-    await log('toggle', `action=${action} status=${data.status}`);
-    res.json(data);
-  } catch (err) {
-    await log('toggle_error', String(err), 'ERROR');
-    res.status(500).json({ error: err.message });
+    const { event, detail='', level='INFO' } = req.body || {};
+    await pool.execute(
+      'INSERT INTO logs(action, state, status, details) VALUES (?,?,?,?)',
+      [event || 'unknown', level, 'completed', detail]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok:false, error: e.message });
   }
 });
 
-// Endpoint to record any client-side actions (e.g., move button presses)
-app.post('/api/log', async (req, res) => {
-  const { event, detail, level } = req.body || {};
-  if (!event) return res.status(400).json({ error: 'event is required' });
-  await log(event, detail || '', level || 'INFO');
-  res.json({ ok: true });
-});
-
-// Fetch logs from the last N minutes (default 60)
 app.get('/api/logs', async (req, res) => {
-  const minutes = Math.max(1, Math.min(240, Number(req.query.minutes || 60)));
+  const minutes = Math.max(1, Math.min(360, parseInt(req.query.minutes || '60', 10)));
   const [rows] = await pool.query(
-    `SELECT id, ts, level, event, detail
-     FROM logs
-     WHERE ts >= (NOW() - INTERVAL ? MINUTE)
-     ORDER BY ts DESC`,
+    'SELECT id, ts, action as event, state as level, status, details as detail FROM logs WHERE ts >= NOW() - INTERVAL ? MINUTE ORDER BY id DESC',
     [minutes]
   );
   res.json(rows);
 });
 
-// Health of the robot sim (running or not)
-app.get('/api/robot/health', async (_req, res) => {
+// --- Robot power ---
+app.post('/api/toggle', async (req, res) => {
+  const action = String(req.query.action || '').toLowerCase();
   try {
-    const { data } = await axios.get(`${ROBOT_API}/health`);
-    res.json(data);
+    const c = await getContainer();
+    if (!c) throw new Error('Robot container not found');
+
+    if (action === 'start') {
+      await c.start();
+      await pool.execute('INSERT INTO logs(action, state, status, details) VALUES (?,?,?,?)', 
+        ['robot_start', 'INFO', 'completed', 'Container started']);
+      return res.json({ status: 'starting' });
+    }
+    if (action === 'stop') {
+      await c.stop({ t: 2 });
+      await pool.execute('INSERT INTO logs(action, state, status, details) VALUES (?,?,?,?)', 
+        ['robot_stop', 'INFO', 'completed', 'Container stopped']);
+      return res.json({ status: 'stopping' });
+    }
+    res.status(400).json({ status: 'error', error: 'Invalid action' });
   } catch (e) {
-    res.status(200).json({ running: false, note: 'robot control unreachable' });
+    await pool.execute('INSERT INTO logs(action, state, status, details) VALUES (?,?,?,?)', 
+      ['robot_' + action, 'ERROR', 'failed', e.message]).catch(() => {});
+    res.status(500).json({ status: 'error', error: e.toString() });
   }
 });
 
-// Static (if you later add assets)
-app.use(express.static(__dirname));
+app.get('/api/robot/health', async (req, res) => {
+  try {
+    const c = await getContainer();
+    if (!c) return res.json({ running: false });
+    const info = await c.inspect();
+    res.json({ running: info.State.Running });
+  } catch {
+    res.json({ running: false });
+  }
+});
 
-const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => console.log(`Web server running on http://0.0.0.0:${PORT}`));
+// === Snapshot endpoint ===
+app.post('/api/snapshot', async (req, res) => {
+  try {
+    const { dataURL, topic='/camera/image_raw' } = req.body || {};
+    if (!dataURL || !dataURL.startsWith('data:image/')) {
+      return res.status(400).json({ok:false, error:'bad dataURL'});
+    }
+    const b64 = dataURL.split(',')[1];
+    const buf = Buffer.from(b64, 'base64');
+    const dir = path.join(__dirname, 'public', 'snaps');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const fname = `snap_${Date.now()}.jpg`;
+    fs.writeFileSync(path.join(dir, fname), buf);
+    await pool.execute('INSERT INTO logs(action, state, status, details) VALUES (?,?,?,?)',
+      ['snapshot', 'INFO', 'completed', `topic=${topic} file=/snaps/${fname}`]);
+    res.json({ ok:true, file:`/snaps/${fname}` });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message });
+  }
+});
+
+// --- Start server ---
+app.listen(PORT, () => console.log(`Web/API on ${PORT}`));

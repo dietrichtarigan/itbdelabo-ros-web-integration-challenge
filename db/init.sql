@@ -1,6 +1,8 @@
-CREATE DATABASE IF NOT EXISTS rosweb;
+CREATE DATABASE IF NOT EXISTS ros_logs;
 
-CREATE TABLE IF NOT EXISTS rosweb.logs (
+USE ros_logs;
+
+CREATE TABLE IF NOT EXISTS logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   level ENUM('INFO','WARN','ERROR') DEFAULT 'INFO',
@@ -8,4 +10,4 @@ CREATE TABLE IF NOT EXISTS rosweb.logs (
   detail TEXT
 );
 
-CREATE INDEX idx_logs_ts ON rosweb.logs (ts);
+CREATE INDEX idx_logs_ts ON logs (ts);
