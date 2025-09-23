@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  db:
+    image: mysql:8.0
+    env_file:
+      - .env
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+
+  web:
+    build: ./web
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000" # web app
+      - "9090:9090" # rosbridge (opsional, kalau web langsung connect)
+      - "8080:8080" # video stream (opsional)
+    restart: unless-stopped
+  # Opsional: jalankan robot di VM
+  # Untuk challenge, biasanya robot (Gazebo + ROS sim) dijalankan di laptop sendiri
+  # Kalau mau deploy di Azure juga, uncomment bagian ini:
+  # robot:
+  #   build: ./robot
+  #   environment:
+  #     - TURTLEBOT3_MODEL=waffle
+  #   ports:
+  #     - "9090:9090"  # rosbridge websocket
+  #     - "8080:8080"  # web_video_server (camera MJPEG)
+  #     - "5000:5000"  # REST control
+  #   restart: unless-stopped

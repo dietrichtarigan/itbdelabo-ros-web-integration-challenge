@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TurtleBot3 Web Control (Docker)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; max-width: 900px; }
+    .grid { display:grid; grid-template-columns:repeat(3,120px); gap:10px; align-items:center; }
+    button { padding:12px; font-size:16px; }
+    #log { height:140px; overflow:auto; border:1px solid #ddd; padding:8px; margin-top:12px; white-space:pre-wrap; }
+    img { max-width: 100%; border:1px solid #ddd; min-height: 120px; background:#f7f7f7; }
+    input[type="text"]{ width: 100%; max-width: 640px; }
+    .row { margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>TurtleBot3 Waffle — Web Teleop (Docker)</h1>
+
+  <div class="row">
+    <label>ROSBridge URL:</label>
+    <input id="rb" value="ws://localhost:9090">
+    <button id="connect">Connect</button>
+    <span id="status">disconnected</span>
+  </div>
+
+  <h3>Camera</h3>
+  <div class="row">
+    <label>Stream URL:</label>
+    <input id="camurl" value="http://localhost:8080/stream?topic=/camera/rgb/image_raw&quality=80&fps=15">
+    <button onclick="document.getElementById('cam').src=document.getElementById('camurl').value">Load</button>
+  </div>
+  <img id="cam" alt="camera stream"/>
+
+  <h3>Teleoperation</h3>
+  <div class="grid">
+    <span></span><button data-cmd="FWD">▲</button><span></span>
+    <button data-cmd="LEFT">◀</button><button data-cmd="STOP">■</button><button data-cmd="RIGHT">▶</button>
+    <span></span><button data-cmd="BACK">▼</button><span></span>
+  </div>
+  <p>Keyboard: W/A/S/D to move, Space to stop.</p>
+
+  <h3>Robot Power</h3>
+  <button onclick="power('start')">Start Robot</button>
+  <button onclick="power('stop')">Stop Robot</button>
+
+  <h3>Logs (last hour)</h3>
+  <button onclick="loadLogs()">Refresh</button>
+  <pre id="log"></pre>
+
+  <!-- roslibjs -->
+  <script src="https://static.robotwebtools.org/roslibjs/current/roslib.min.js"></script>
+  <script>
+    let ros=null, cmdVel=null;
+    const log = (m)=>{ const el=document.getElementById('log'); el.textContent += m+"\\n"; el.scrollTop=el.scrollHeight; };
+
+    document.getElementById('connect').onclick = () => {
+      if (ros) try{ ros.close(); }catch{}
+      ros = new ROSLIB.Ros({url: document.getElementById('rb').value});
+      ros.on('connection', ()=>{ document.getElementById('status').innerText='connected'; log('Connected to rosbridge'); setup(); });
+      ros.on('error', (e)=>{ document.getElementById('status').innerText='error'; log('Error: '+e); });
+      ros.on('close', ()=>{ document.getElementById('status').innerText='closed'; log('Closed'); });
+    };
+
+    function setup(){
+      cmdVel = new ROSLIB.Topic({ ros, name:'/cmd_vel', messageType:'geometry_msgs/Twist' });
+    }
+
+    function sendTwist(lx=0, az=0){
+      if(!cmdVel) return;
+      const msg = new ROSLIB.Message({ linear:{x:lx,y:0,z:0}, angular:{x:0,y:0,z:az} });
+      cmdVel.publish(msg);
+      fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:'teleop', state:'cmd', status:'ok', details:`lx=${lx} az=${az}`})
+      }).catch(()=>{});
+    }
+
+    const SPEED=0.15, TURN=0.7;
+    function handle(cmd){
+      if(cmd==='FWD') sendTwist(SPEED,0);
+      else if(cmd==='BACK') sendTwist(-SPEED,0);
+      else if(cmd==='LEFT') sendTwist(0,TURN);
+      else if(cmd==='RIGHT') sendTwist(0,-TURN);
+      else sendTwist(0,0);
+    }
+
+    document.querySelectorAll('button[data-cmd]').forEach(b=>{
+      b.onmousedown = ()=>handle(b.dataset.cmd);
+      b.onmouseup = ()=>handle('STOP');
+      b.ontouchstart = (e)=>{ e.preventDefault(); handle(b.dataset.cmd); };
+      b.ontouchend = ()=>handle('STOP');
+    });
+
+    document.addEventListener('keydown', (e)=>{
+      if(e.repeat) return;
+      if(e.key==='w') handle('FWD');
+      else if(e.key==='s') handle('BACK');
+      else if(e.key==='a') handle('LEFT');
+      else if(e.key==='d') handle('RIGHT');
+      else if(e.key===' ') handle('STOP');
+    });
+    document.addEventListener('keyup', ()=>handle('STOP'));
+
+    function power(mode){
+      fetch(`/api/power/${mode}`, {method:'POST'}).then(r=>r.json()).then(d=>log('Power '+mode+': '+JSON.stringify(d)))
+      .catch(()=>log('Power '+mode+': failed'));
+      fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:'power', state:mode, status:'sent'})
+      }).catch(()=>{});
+    }
+    async function loadLogs(){
+      const rows = await (await fetch('/api/log/last-hour')).json();
+      log('--- last hour ---'); rows.forEach(r=> log(`${r.ts} | ${r.action} | ${r.state} | ${r.status} | ${r.details||''}`));
+    }
+  </script>
+</body>
+</html>
