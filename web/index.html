@@ -1,116 +1,325 @@
 <!doctype html>
-<html>
+<html lang="en">
+
 <head>
   <meta charset="utf-8" />
-  <title>TurtleBot3 Web Control (Docker)</title>
+  <title>ROS Web Control — TurtleBot3 Waffle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- roslibjs (official robot web tools) -->
+  <script src="https://static.robotwebtools.org/roslibjs/current/roslib.min.js"></script>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 24px; max-width: 900px; }
-    .grid { display:grid; grid-template-columns:repeat(3,120px); gap:10px; align-items:center; }
-    button { padding:12px; font-size:16px; }
-    #log { height:140px; overflow:auto; border:1px solid #ddd; padding:8px; margin-top:12px; white-space:pre-wrap; }
-    img { max-width: 100%; border:1px solid #ddd; min-height: 120px; background:#f7f7f7; }
-    input[type="text"]{ width: 100%; max-width: 640px; }
-    .row { margin: 8px 0; }
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --txt: #e5e7eb;
+      --accent: #22d3ee;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--txt);
+    }
+
+    header {
+      padding: 18px 22px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      border-bottom: 1px solid #1f2937;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 22px;
+      display: grid;
+      gap: 22px;
+      grid-template-columns: 1fr 420px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid #1f2937;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 10px 20px rgba(0, 0, 0, .25);
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid #374151;
+      background: #0b1220;
+      color: var(--txt);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover {
+      border-color: #4b5563;
+      transform: translateY(-1px);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 100px);
+      gap: 10px;
+      justify-content: center;
+      margin-top: 10px;
+    }
+
+    .big {
+      font-size: 18px;
+      padding: 14px 0;
+    }
+
+    img.stream {
+      width: 100%;
+      max-height: 520px;
+      object-fit: cover;
+      border-radius: 12px;
+      border: 1px solid #374151;
+      background: #000;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #1f2937;
+      font-size: 14px;
+    }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid #374151;
+      background: #0b1220;
+    }
+
+    .muted {
+      color: #9ca3af;
+    }
+
+    .ok {
+      color: #34d399;
+    }
+
+    .warn {
+      color: #f59e0b;
+    }
+
+    .err {
+      color: #f43f5e;
+    }
   </style>
 </head>
+
 <body>
-  <h1>TurtleBot3 Waffle — Web Teleop (Docker)</h1>
+  <header>ROS Web Control — TurtleBot3 Waffle</header>
 
-  <div class="row">
-    <label>ROSBridge URL:</label>
-    <input id="rb" value="ws://localhost:9090">
-    <button id="connect">Connect</button>
-    <span id="status">disconnected</span>
+  <div class="wrap">
+    <section class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row">
+          <span>Status:</span>
+          <span id="sim-status" class="badge muted">checking…</span>
+        </div>
+        <div class="row">
+          <button id="startBtn">Start Robot</button>
+          <button id="stopBtn">Stop Robot</button>
+        </div>
+      </div>
+
+      <div style="margin-top:14px">
+        <img id="cam" class="stream" alt="Camera stream" />
+        <div class="muted" style="margin-top:6px">Topic: /camera/rgb/image_raw</div>
+      </div>
+
+      <div style="margin-top:18px">
+        <div class="row" style="justify-content:center; margin-bottom:8px">
+          <span class="muted">Teleop (WASD/Arrows to drive, Shift for faster)</span>
+        </div>
+        <div class="grid">
+          <div></div> <button class="big" data-cmd="FWD">▲</button>
+          <div></div>
+          <button class="big" data-cmd="LEFT">◀</button>
+          <button class="big" data-cmd="STOP">■</button>
+          <button class="big" data-cmd="RIGHT">▶</button>
+          <div></div> <button class="big" data-cmd="BACK">▼</button>
+          <div></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">Logs (last 60 min)</h3>
+        <button id="refreshLogs">Refresh</button>
+      </div>
+      <table id="logs" style="margin-top:10px">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Level</th>
+            <th>Event</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </aside>
   </div>
 
-  <h3>Camera</h3>
-  <div class="row">
-    <label>Stream URL:</label>
-    <input id="camurl" value="http://localhost:8080/stream?topic=/camera/rgb/image_raw&quality=80&fps=15">
-    <button onclick="document.getElementById('cam').src=document.getElementById('camurl').value">Load</button>
-  </div>
-  <img id="cam" alt="camera stream"/>
-
-  <h3>Teleoperation</h3>
-  <div class="grid">
-    <span></span><button data-cmd="FWD">▲</button><span></span>
-    <button data-cmd="LEFT">◀</button><button data-cmd="STOP">■</button><button data-cmd="RIGHT">▶</button>
-    <span></span><button data-cmd="BACK">▼</button><span></span>
-  </div>
-  <p>Keyboard: W/A/S/D to move, Space to stop.</p>
-
-  <h3>Robot Power</h3>
-  <button onclick="power('start')">Start Robot</button>
-  <button onclick="power('stop')">Stop Robot</button>
-
-  <h3>Logs (last hour)</h3>
-  <button onclick="loadLogs()">Refresh</button>
-  <pre id="log"></pre>
-
-  <!-- roslibjs -->
-  <script src="https://static.robotwebtools.org/roslibjs/current/roslib.min.js"></script>
   <script>
-    let ros=null, cmdVel=null;
-    const log = (m)=>{ const el=document.getElementById('log'); el.textContent += m+"\\n"; el.scrollTop=el.scrollHeight; };
+    // --- Config derivation (host ports exposed by docker-compose) ---
+    const HOST = location.hostname;
+    const ROSBRIDGE_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + HOST + ':9090';
+    const MJPEG_URL = location.protocol + '//' + HOST + ':8080/stream?topic=/camera/rgb/image_raw';
+    const API = location.protocol + '//' + HOST + ':8000/api';
 
-    document.getElementById('connect').onclick = () => {
-      if (ros) try{ ros.close(); }catch{}
-      ros = new ROSLIB.Ros({url: document.getElementById('rb').value});
-      ros.on('connection', ()=>{ document.getElementById('status').innerText='connected'; log('Connected to rosbridge'); setup(); });
-      ros.on('error', (e)=>{ document.getElementById('status').innerText='error'; log('Error: '+e); });
-      ros.on('close', ()=>{ document.getElementById('status').innerText='closed'; log('Closed'); });
-    };
+    // Update camera stream URL
+    document.getElementById('cam').src = MJPEG_URL;
 
-    function setup(){
-      cmdVel = new ROSLIB.Topic({ ros, name:'/cmd_vel', messageType:'geometry_msgs/Twist' });
+    // --- ROS connection via roslibjs ---
+    let ros;
+    let cmdVel;
+
+    function connectROS() {
+      ros = new ROSLIB.Ros({ url: ROSBRIDGE_URL });
+
+      ros.on('connection', () => {
+        setStatus('connected');
+        cmdVel = new ROSLIB.Topic({
+          ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist'
+        });
+      });
+
+      ros.on('error', (err) => {
+        console.error(err);
+        setStatus('error');
+      });
+
+      ros.on('close', () => {
+        setStatus('disconnected');
+        // Try reconnect every 2s
+        setTimeout(connectROS, 2000);
+      });
     }
 
-    function sendTwist(lx=0, az=0){
-      if(!cmdVel) return;
-      const msg = new ROSLIB.Message({ linear:{x:lx,y:0,z:0}, angular:{x:0,y:0,z:az} });
+    function setStatus(s) {
+      const el = document.getElementById('sim-status');
+      const cls = { connected: 'ok', disconnected: 'warn', error: 'err', checking: 'muted', running: 'ok', stopped: 'warn' };
+      el.className = 'badge ' + (cls[s] || 'muted');
+      el.textContent = s;
+    }
+
+    // --- Movement helpers ---
+    function sendTwist(lx = 0, az = 0) {
+      if (!cmdVel) return;
+      const msg = new ROSLIB.Message({
+        linear: { x: lx, y: 0.0, z: 0.0 },
+        angular: { x: 0.0, y: 0.0, z: az }
+      });
       cmdVel.publish(msg);
-      fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({action:'teleop', state:'cmd', status:'ok', details:`lx=${lx} az=${az}`})
-      }).catch(()=>{});
     }
 
-    const SPEED=0.15, TURN=0.7;
-    function handle(cmd){
-      if(cmd==='FWD') sendTwist(SPEED,0);
-      else if(cmd==='BACK') sendTwist(-SPEED,0);
-      else if(cmd==='LEFT') sendTwist(0,TURN);
-      else if(cmd==='RIGHT') sendTwist(0,-TURN);
-      else sendTwist(0,0);
+    const SPEED = 0.3, TURN = 0.9;
+    const FAST = 2.0;
+
+    async function log(event, detail = '', level = 'INFO') {
+      try { await fetch(`${API}/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event, detail, level }) }); } catch { }
     }
 
-    document.querySelectorAll('button[data-cmd]').forEach(b=>{
-      b.onmousedown = ()=>handle(b.dataset.cmd);
-      b.onmouseup = ()=>handle('STOP');
-      b.ontouchstart = (e)=>{ e.preventDefault(); handle(b.dataset.cmd); };
-      b.ontouchend = ()=>handle('STOP');
-    });
+    function bindTeleop() {
+      const map = {
+        FWD: () => sendTwist(SPEED, 0),
+        BACK: () => sendTwist(-SPEED, 0),
+        LEFT: () => sendTwist(0, TURN),
+        RIGHT: () => sendTwist(0, -TURN),
+        STOP: () => sendTwist(0, 0),
+      };
 
-    document.addEventListener('keydown', (e)=>{
-      if(e.repeat) return;
-      if(e.key==='w') handle('FWD');
-      else if(e.key==='s') handle('BACK');
-      else if(e.key==='a') handle('LEFT');
-      else if(e.key==='d') handle('RIGHT');
-      else if(e.key===' ') handle('STOP');
-    });
-    document.addEventListener('keyup', ()=>handle('STOP'));
+      document.querySelectorAll('button[data-cmd]').forEach(btn => {
+        btn.addEventListener('mousedown', () => { map[btn.dataset.cmd](); log('teleop', btn.dataset.cmd); });
+        btn.addEventListener('mouseup', () => { map.STOP(); });
+        btn.addEventListener('mouseleave', () => { map.STOP(); });
+      });
 
-    function power(mode){
-      fetch(`/api/power/${mode}`, {method:'POST'}).then(r=>r.json()).then(d=>log('Power '+mode+': '+JSON.stringify(d)))
-      .catch(()=>log('Power '+mode+': failed'));
-      fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({action:'power', state:mode, status:'sent'})
-      }).catch(()=>{});
+      window.addEventListener('keydown', e => {
+        const fast = e.shiftKey ? FAST : 1.0;
+        if (['ArrowUp', 'w', 'W'].includes(e.key)) { sendTwist(SPEED * fast, 0); log('teleop', 'key:FWD'); }
+        else if (['ArrowDown', 's', 'S'].includes(e.key)) { sendTwist(-SPEED * fast, 0); log('teleop', 'key:BACK'); }
+        else if (['ArrowLeft', 'a', 'A'].includes(e.key)) { sendTwist(0, TURN * fast); log('teleop', 'key:LEFT'); }
+        else if (['ArrowRight', 'd', 'D'].includes(e.key)) { sendTwist(0, -TURN * fast); log('teleop', 'key:RIGHT'); }
+      });
+      window.addEventListener('keyup', () => sendTwist(0, 0));
     }
-    async function loadLogs(){
-      const rows = await (await fetch('/api/log/last-hour')).json();
-      log('--- last hour ---'); rows.forEach(r=> log(`${r.ts} | ${r.action} | ${r.state} | ${r.status} | ${r.details||''}`));
+
+    // --- Start/Stop controls ---
+    async function toggle(action) {
+      const r = await fetch(`${API}/toggle?action=${action}`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      await log('toggle_click', action);
+      checkHealth();
+      return data;
     }
+    document.getElementById('startBtn').onclick = () => toggle('start');
+    document.getElementById('stopBtn').onclick = () => toggle('stop');
+
+    async function checkHealth() {
+      try {
+        const r = await fetch(`${API}/robot/health`);
+        const { running } = await r.json();
+        setStatus(running ? 'running' : 'stopped');
+      } catch {
+        setStatus('disconnected');
+      }
+    }
+
+    // --- Logs table ---
+    async function loadLogs() {
+      const tbody = document.querySelector('#logs tbody');
+      tbody.innerHTML = '';
+      try {
+        const r = await fetch(`${API}/logs?minutes=60`);
+        const rows = await r.json();
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${new Date(row.ts).toLocaleTimeString()}</td>
+            <td>${row.level}</td>
+            <td>${row.event}</td>
+            <td class="muted">${row.detail || ''}</td>`;
+          tbody.appendChild(tr);
+        });
+      } catch { }
+    }
+    document.getElementById('refreshLogs').onclick = loadLogs;
+
+    // Boot
+    (function init() {
+      setStatus('checking');
+      connectROS();
+      bindTeleop();
+      checkHealth();
+      loadLogs();
+      setInterval(loadLogs, 15_000);
+      setInterval(checkHealth, 5_000);
+    })();
   </script>
 </body>
+
 </html>

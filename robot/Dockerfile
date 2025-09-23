@@ -1,84 +1,50 @@
-FROM osrf/ros:noetic-desktop-full
+FROM ros:noetic-desktop-full
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    python3-rosdep \
-    python3-rosinstall \
-    python3-rosinstall-generator \
-    python3-wstool \
-    build-essential \
-    git \
-    wget \
-    xvfb \
-    x11-utils \
-    mesa-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create catkin workspace
-RUN mkdir -p /catkin_ws/src
-WORKDIR /catkin_ws
-
-# Initialize rosdep (if not already done)
-RUN rosdep update || true
-
-# Install TurtleBot3 packages
-RUN apt-get update && apt-get install -y \
+# ROS packages for TurtleBot3 sim, rosbridge, and camera streaming
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-noetic-turtlebot3 \
     ros-noetic-turtlebot3-simulations \
-    ros-noetic-turtlebot3-gazebo \
     ros-noetic-rosbridge-server \
     ros-noetic-web-video-server \
+    python3-flask \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up environment
-RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
-RUN echo "export TURTLEBOT3_MODEL=waffle" >> ~/.bashrc
-RUN echo "export GAZEBO_MODEL_PATH=\$GAZEBO_MODEL_PATH:/opt/ros/noetic/share/turtlebot3_gazebo/models" >> ~/.bashrc
+ENV TURTLEBOT3_MODEL=waffle
+WORKDIR /root
 
-# Copy launch file
-COPY sim_stack.launch /catkin_ws/sim_stack.launch
+# Launch file (starts Gazebo + rosbridge + web_video_server)
+COPY sim_stack.launch /root/sim_stack.launch
 
-# Build catkin workspace
-RUN /bin/bash -c "source /opt/ros/noetic/setup.bash && catkin_make"
+# Minimal REST control service to start/stop the stack on demand
+# (keeps container light: file created during build)
+RUN printf '%s\n' \
+    "from flask import Flask, jsonify, request" \
+    "from subprocess import Popen" \
+    "import os, signal" \
+    "app = Flask(__name__)" \
+    "proc = None" \
+    "@app.route('/start', methods=['POST','GET'])" \
+    "def start():" \
+    "  global proc" \
+    "  if proc and proc.poll() is None:" \
+    "    return jsonify(status='already_running')" \
+    "  proc = Popen(['roslaunch','--wait','/root/sim_stack.launch'])" \
+    "  return jsonify(status='starting')" \
+    "@app.route('/stop', methods=['POST','GET'])" \
+    "def stop():" \
+    "  global proc" \
+    "  if proc and proc.poll() is None:" \
+    "    proc.terminate()" \
+    "    try: proc.wait(timeout=10)" \
+    "    except Exception: proc.kill()" \
+    "  os.system('pkill -f gzserver || true'); os.system('pkill -f rosbridge_websocket || true'); os.system('pkill -f web_video_server || true')" \
+    "  return jsonify(status='stopped')" \
+    "@app.route('/health')" \
+    "def health():" \
+    "  running = bool(proc and proc.poll() is None)" \
+    "  return jsonify(running=running)" \
+    "if __name__ == '__main__':" \
+    "  app.run(host='0.0.0.0', port=5000)" > /root/control.py
 
-# Expose ports
-EXPOSE 9090 8080
-
-# Set environment variables for headless operation with proper OpenGL
-ENV DISPLAY=:99
-ENV LIBGL_ALWAYS_SOFTWARE=1
-ENV QT_X11_NO_MITSHM=1
-ENV OGRE_RTT_MODE=Copy
-ENV GAZEBO_MODEL_PATH=/opt/ros/noetic/share/turtlebot3_gazebo/models:$GAZEBO_MODEL_PATH
-
-# Create startup script
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Start Xvfb\n\
-Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &\n\
-export DISPLAY=:99\n\
-\n\
-# Wait for X server to start\n\
-sleep 3\n\
-\n\
-# Source ROS environment\n\
-source /opt/ros/noetic/setup.bash\n\
-source /catkin_ws/devel/setup.bash\n\
-\n\
-# Set TurtleBot3 model\n\
-export TURTLEBOT3_MODEL=waffle\n\
-\n\
-# Start roscore in background\n\
-roscore &\n\
-ROSCORE_PID=$!\n\
-\n\
-# Wait for roscore to start\n\
-sleep 5\n\
-\n\
-# Launch the simulation\n\
-roslaunch /catkin_ws/sim_stack.launch\n\
-' > /start_simulation.sh && chmod +x /start_simulation.sh
-
-CMD ["/start_simulation.sh"]
+EXPOSE 9090 8080 5000
+CMD ["bash", "-lc", "python3 /root/control.py"]

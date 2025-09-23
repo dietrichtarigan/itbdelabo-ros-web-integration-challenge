@@ -1,17 +1,11 @@
-FROM node:18-bullseye
+FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package.json first for better caching
 COPY package.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm install --only=production
 
-# Create public directory
-RUN mkdir -p public
+COPY server.js index.html ./
 
-# Copy application files
-COPY server.js ./
-COPY index.html ./public/
-
-EXPOSE 3000
-CMD [ "node", "server.js" ]
+EXPOSE 8000
+CMD ["node", "server.js"]
